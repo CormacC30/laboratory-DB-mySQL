@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS Analysis(
     
 -- -----------------------------------------------------
 -- Create table LabInstruments
+-- NOTE: Additional attribute instrumentName is included here (not present in design document)
 -- -----------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS LabInstruments(
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS Supplier(
 
 -- -----------------------------------------------------
 -- Create table Material
+-- NOTE: Additional attribute materialName is included here (not present in design document)
 -- -----------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS Material(
@@ -255,9 +257,12 @@ INSERT INTO Scientist VALUES
 ('FG345678', 'Siobhan', 'Kavanagh', '1992-03-18', '34 Elm Terrace', 'Limerick', 'Limerick', 'V94 EF89', '0874445852', '60000', 'RS112233'),
 ('HI901234', 'Ciaran', 'Fitzpatrick', '1986-09-03', '56 Pine Street', 'Waterford', 'Waterford', 'X91 JK45', '0563259788', '65000', 'RS112233'),
 ('JK567890', 'Niamh', 'O\'Sullivan', '1994-11-20', '89 Green Lane', 'Belfast', 'Antrim', 'BT1 2XY', '0862254731', '70000',  'RS112233'),
-('LM112233', 'Eoin', 'Walsh', '1989-02-15', '23 Meadow Drive', 'Derry', 'Londonderry', 'BT48 6AB', '0212258447', '75000', 'RS112233'),
+('LM112233', 'Eoin', 'Walsh', '1989-02-15', '23 Meadow Drive', 'Derry', 'Derry', 'BT48 6AB', '0212258447', '75000', 'RS112233'),
 ('NO445566', 'Fiona', 'Doyle', '1993-06-01', '67 Main Street', 'Kilkenny', 'Kilkenny', 'R95 XYZ1', '0861136452', '80000', 'RS112233'),
 ('PQ778899', 'Padraig', 'Ryan', '1987-08-28', '101 Hillside Avenue', 'Sligo', 'Sligo', 'F91 ABC2', '0853369655', '85000', 'RS112233');
+
+INSERT INTO Scientist VALUES
+('CE992240', 'Chloe', 'Brennan', '1996-08-16', 'Glendine Heights', 'Castlecomer Road', 'Kilkenny', 'R95 U9OL', '0839385459', '30000', 'BL339333');
 
 INSERT INTO Analysis VALUES
 ('AN001', 'Impurities', 'NGT 0.1%', 'CC182270'),
@@ -412,6 +417,10 @@ VALUES
 ('TF010' , 'Thermo Fisher', 'Ringaskiddy', 'Cork', 'Ireland', 'T11 P0LI'),
 ('AGRI002', 'Nature\'s Harvest Farms', '234 Marino Road', 'Bantry', 'Ireland', 'P78 I99R'),
 ('GSK502', 'GlaxoSmithKline', '10 Oak Avenue', 'Stevenage', 'United Kingdom', 'OKP 9O1');
+
+INSERT INTO CLIENT (clientID, companyName, street, city, country, postCode) VALUES
+('ABB001', 'AbbVie', 'Carrigtohill', 'Cork', 'Ireland', 'T45 OL8I'),
+('AMG050', 'AMGEN', 'Dun Laoighre', 'Dublin', 'Ireland', 'D14 UP23');
 
 -- Populating the ClientPhones table with sample data
 INSERT INTO ClientPhones (contactNumber, clientID)
@@ -664,7 +673,7 @@ CREATE TRIGGER restrictDateCompleted
 BEFORE UPDATE ON Tests
 FOR EACH ROW
 BEGIN
-    IF NEW.status IN ('Awaiting Testing', 'In Progress') AND NEW.dateCompleted IS NOT NULL THEN
+    IF Sample.progressStatus IN ('Awaiting Testing', 'In Progress') AND NEW.dateCompleted IS NOT NULL THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Cannot set dateCompleted for tests with status "Awaiting Testing" or "In Progress"';
     END IF;
@@ -725,20 +734,54 @@ select * from productInTesting;
 select * from contactSupplier;
 select * from contactStock;
 
-CREATE USER Scientist identified by 'scientist';
-CREATE USER LabSupervisor identified by 'scientist';
+DROP USER IF EXISTS Scientist;
+DROP USER IF EXISTS LabSupervisor;
+DROP USER IF EXISTS LabDirector;
+CREATE USER IF NOT EXISTS Scientist identified by 'science';
+CREATE USER IF NOT EXISTS LabSupervisor identified by 'science';
+CREATE USER IF NOT EXISTS LabDirector identified by 'director';
 
--- Scientist cannot have access to deleting any records of samples/analysis
+-- Scientist cannot have access to deleting any records of samples, analysis, clients etc.. they are just generating the results
+
 GRANT INSERT(labnotebookID), UPDATE(labnotebookID), SELECT(labnotebookID) ON analysis to Scientist;
 grant insert, select on sample to Scientist;
 grant select on laboratory.* to Scientist;
 grant update(progressStatus) on sample to Scientist;
-grant update(quantityUsed) on consumes to Scientist;
-grant update(dateCompleted) on tests to Scientist;
+grant insert, update on consumes to Scientist;
+grant insert, update(labNoteBookID, dateCompleted, sampleID) on tests to Scientist;
 grant insert, update on Material to Scientist;
 grant insert, update on batch to Scientist;
+grant insert, update on Uses to Scientist;
+grant insert, update on Reagent to Scientist;
+grant insert, update on Solvent to Scientist;
+grant insert, update on ReferenceStandard to Scientist;
 
-grant all on laboratory.* to LabSupervisor;
+-- Privileges for the lab supervisor
+-- supervisor should still not be able to delete some data such as results, or analysis lab notebooks for data integrity reasons
+grant select, insert, update on laboratory.* to LabSupervisor;
+grant delete on Batch to LabSupervisor;
+grant delete on RawMaterial to LabSupervisor;
+grant delete on FinishedProduct to LabSupervisor;
+grant delete on Sample to LabSupervisor;
+grant delete on Uses to LabSupervisor; -- may need to delete here in case a scientist makes a dog's dinner of filling out the analysis data
+grant delete on Consumes to LabSupervisor;
+grant delete on labInstruments to LabSupervisor;
+grant delete on Material to LabSupervisor;
+grant delete on Supplier to LabSupervisor;
+grant delete on clientPhones to LabSupervisor;
+grant delete on Reagent to LabSupervisor;
+grant delete on Solvent to LabSupervisor;
+grant delete on ReferenceStandard to LabSupervisor;
+
+/* 
+Privileges for the lab Director
+director should be able to make high level business decisions, 
+i.e. firing staff, deleting clients, and choosing who to grant privileges to 
+*/
+grant all on laboratory.* to LabDirector WITH GRANT OPTION; 
 
 show grants for Scientist;
 show grants for LabSupervisor;
+show grants for LabDirector;
+
+
