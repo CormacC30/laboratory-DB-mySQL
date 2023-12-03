@@ -551,30 +551,50 @@ ON Client (companyName);
 CREATE INDEX materialind
 ON Material (materialName);
 
+-- created an audit trail table to log any changes that are made to analysis, essential for lab data integrity and regulatory inspections.. 
+CREATE TABLE auditTrail(
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    labNotebookID CHAR(10),
+    analyticalMethod VARCHAR(30),
+    changeDate DATETIME DEFAULT NULL,
+    action VARCHAR(50) DEFAULT NULL
+    );
+
 -- CREATING TRIGGERS
+
+-- - This is a trigger which will auto-update the audit trail
+   
+DELIMITER $$
+CREATE TRIGGER before_analysis_update
+	BEFORE UPDATE ON Analysis
+    FOR EACH ROW
+BEGIN
+	INSERT INTO auditTrail
+    SET action = 'update',
+		labNoteBookID = OLD.labNoteBookID,
+        analyticalMethod = OLD.analyticalMethod,
+        changeDate = NOW();
+END $$
+DELIMITER ;
+
 
 -- This trigger will automatically set the next Calibration date in the lab instruments table every time a new record is added to the uses table.
 -- The default next calibration date is set to 6 months
 
-DELIMITER $
-
+DELIMITER $$
 CREATE TRIGGER updateCalDate
-AFTER INSERT ON Uses
+BEFORE INSERT ON labInstruments
 FOR EACH ROW
 BEGIN
-    UPDATE LabInstruments
-    SET nextCalDate = DATE_ADD(NEW.measurementTime, INTERVAL 6 MONTH)
-    WHERE equipmentID = NEW.equipmentID;
-END;
-
-$
-
+    IF DATEDIFF(CURDATE(), NEW.nextCalDate) < 180 THEN 
+        SET NEW.nextCalDate = DATE_ADD(CURDATE(), INTERVAL 6 MONTH);
+    END IF;
+END; 
+$$
 DELIMITER ;
 
 -- Trigger which prevents the deletion of a client if there are batches associated with it
-
-DELIMITER $
-
+DELIMITER $$
 CREATE TRIGGER restrictClientDeletion
 BEFORE DELETE ON Client
 FOR EACH ROW
@@ -591,54 +611,45 @@ BEGIN
         SET MESSAGE_TEXT = 'Cannot delete client with associated batches';
     END IF;
 END;
-
-$
-
-DELIMITER ;
-
-/* IF the progress status of a testing on a sample is changed to complete, it will automatically
-Set the datecompleted to the current date */
-
-DELIMITER $
-
-CREATE TRIGGER updateTestsDate
-AFTER UPDATE ON Sample
-FOR EACH ROW
-BEGIN
-    IF NEW.progressStatus = 'Completed' AND OLD.progressStatus <> 'Completed' THEN
-        UPDATE Tests
-        SET dateCompleted = CURDATE()
-        WHERE sampleID = NEW.sampleID;
-    END IF;
-END;
-
-$
-
+$$
 DELIMITER ;
 
 -- Create a trigger that updates the material quantity in stock every time consumes table is updated
 
-DELIMITER $
-
+DELIMITER $$
 CREATE TRIGGER updateStock
 BEFORE INSERT ON Consumes
 FOR EACH ROW
 BEGIN
-    -- Update the quantity in stock for the corresponding material
-    UPDATE Materials
+   
+    UPDATE Material
     SET quantityInStock = quantityInStock - NEW.quantityUsed
     WHERE lotNumber = NEW.lotNumber;
 
-    -- Check if the updated quantity is non-negative; if not, prevent the insertion
-    IF (SELECT quantityInStock FROM Materials WHERE lotNumber = NEW.lotNumber) < 0 THEN
-        SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'Insufficient quantity in stock';
-    END IF;
 END;
-
-$
+$$
 DELIMITER ;
 
+-- Trigger which updates the date completed to current date when the progress status of a sample is changed to completed.
+DELIMITER $$ 
+CREATE TRIGGER updateCompleteDate
+AFTER UPDATE ON Sample
+FOR EACH ROW
+BEGIN
+	IF NEW.progressStatus = 'Completed' THEN
+		UPDATE Tests
+		SET dateCompleted = CURDATE()
+		WHERE sampleID = OLD.SampleID;
+    END IF;
+END;
+$$
+DELIMITER ;
+
+/* 
+		CREATING VIEWS
+*/
+        
+-- this view gives the equipment currently in use for testing in progress
 CREATE OR REPLACE VIEW labInstAnalysis AS
 	SELECT equipmentID, instrumentName, COUNT(equipmentID) AS 'Number of current tests'
     FROM LabInstruments NATURAL JOIN Uses 
@@ -647,41 +658,6 @@ CREATE OR REPLACE VIEW labInstAnalysis AS
     NATURAL JOIN Sample
     WHERE progressStatus LIKE "In Progress"
     GROUP BY equipmentID;
-
-DELIMITER $
-
--- This trigger updates any samples which have a progress status of "In progress" or "Awaiting Testing" to having a dateCompleted of the current date
-
-CREATE TRIGGER updateDateCompleted
-AFTER UPDATE ON Sample
-FOR EACH ROW
-BEGIN
-    IF NEW.progressStatus = 'Completed' AND OLD.progressStatus != 'Completed' THEN
-        UPDATE Tests
-        SET dateCompleted = CURDATE()
-        WHERE sampleID = NEW.sampleID;
-    END IF;
-END;
-$
-
-DELIMITER ;
-    
--- This trigger restricts the date completed of any samples awaiting testing or in progress to NULL, otherwise you get an error
-DELIMITER $
-
-CREATE TRIGGER restrictDateCompleted
-BEFORE UPDATE ON Tests
-FOR EACH ROW
-BEGIN
-    IF Sample.progressStatus IN ('Awaiting Testing', 'In Progress') AND NEW.dateCompleted IS NOT NULL THEN
-        SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'Cannot set dateCompleted for tests with status "Awaiting Testing" or "In Progress"';
-    END IF;
-END;
-$
-
-DELIMITER ;    
-
 
 -- creates a view that allows users to view the lab instruments which are due to be calibrated in the next month, to in order to contact an engineer for scheduled maintenance
 CREATE OR REPLACE VIEW urgentCal AS
@@ -715,15 +691,9 @@ CREATE OR REPLACE VIEW expiredMaterial AS
     
 -- this view shows batches in progress
 CREATE OR REPLACE VIEW productInTesting AS  
-	SELECT productName, batchNumber FROM Batch
+	SELECT productName, batchNumber, sampleID FROM Batch
     NATURAL JOIN Sample
     WHERE progressStatus LIKE "In Progress";
-
-SELECT dateCompleted FROM Tests
-NATURAL JOIN Sample WHERE progressStatus LIKE "In Progress";
-
-SELECT dateCompleted FROM Tests
-NATURAL JOIN Sample WHERE progressStatus LIKE "Awaiting Testing";
     
 select * from urgentCal;
 select * from LabInstruments;
@@ -772,6 +742,7 @@ grant delete on clientPhones to LabSupervisor;
 grant delete on Reagent to LabSupervisor;
 grant delete on Solvent to LabSupervisor;
 grant delete on ReferenceStandard to LabSupervisor;
+grant select on auditTrail to LabSupervisor; -- Nobody should be able to delete the audit trail, not even the supervisor or director. not accessible by regular staff
 
 /* 
 Privileges for the lab Director
